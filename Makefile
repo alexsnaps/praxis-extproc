@@ -186,7 +186,10 @@ FIPS_CARGO_EXTRA        ?=
 # Appended to the praxis-extproc-fips-host-* cache volume names so runs with
 # different trust can be kept apart: CI gives pull requests their own volumes
 # (see .github/workflows/fips.yaml) and the warm ones stay with main.
+# Exported because recipes read it from the shell environment ($$VAR), which
+# keeps a caller's value data instead of shell syntax.
 FIPS_HOST_VOLUME_SUFFIX ?=
+export FIPS_HOST_VOLUME_SUFFIX
 FIPS_BIN                ?= $(FIPS_TARGET_DIR)/release/praxis-extproc
 FIPS_CARGO_ARGS         := -p praxis-extproc --no-default-features --features $(FIPS_FEATURES) --target-dir $(FIPS_TARGET_DIR)
 # Red Hat's scanner reads the crate list that `cargo auditable` embeds in the
@@ -357,8 +360,8 @@ fips-toolchain: fips-verify-image
 test-fips-host: fips-toolchain
 	podman run --rm --userns=keep-id --security-opt label=disable \
 		-v $(CURDIR):/src -w /src \
-		-v praxis-extproc-fips-host-cargo$(FIPS_HOST_VOLUME_SUFFIX):/cargo:U \
-		-v praxis-extproc-fips-host-target$(FIPS_HOST_VOLUME_SUFFIX):/target \
+		-v "praxis-extproc-fips-host-cargo$${FIPS_HOST_VOLUME_SUFFIX}:/cargo:U" \
+		-v "praxis-extproc-fips-host-target$${FIPS_HOST_VOLUME_SUFFIX}:/target" \
 		-e PRAXIS_FIPS_HOST=1 -e PRAXIS_REQUIRE_FIPS=1 \
 		-e CARGO_TERM_COLOR=always \
 		$(FIPS_TOOLCHAIN_IMAGE) \
@@ -413,7 +416,7 @@ fips-runtime-probe: | require-podman
 	@mkdir -p $(FIPS_TARGET_DIR)
 	$(XTASK) fips runtime-probe $(FIPS_IMAGE_REF) \
 		--toolchain-image $(FIPS_TOOLCHAIN_IMAGE) --log $(FIPS_TARGET_DIR)/runtime-probe.log \
-		$(if $(FIPS_HOST_VOLUME_SUFFIX),--volume-suffix=$(FIPS_HOST_VOLUME_SUFFIX))
+		$(if $(FIPS_HOST_VOLUME_SUFFIX),"--volume-suffix=$${FIPS_HOST_VOLUME_SUFFIX}")
 
 # The image reference the FIPS targets operate on, for scripts that need it.
 fips-image-ref:
