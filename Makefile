@@ -181,8 +181,11 @@ FIPS_FEATURES           := responses,aws-sigv4
 FIPS_TARGET_DIR         ?= target/fips
 # Extra cargo arguments for every FIPS build and test target; the toolchain
 # image sets --ignore-rust-version because Red Hat's rust-toolset may trail
-# the workspace's rust-version.
+# the workspace's rust-version. Exported and read back unquoted from the
+# shell environment ($$VAR), which word-splits the arguments but never
+# parses a caller's value as shell syntax.
 FIPS_CARGO_EXTRA        ?=
+export FIPS_CARGO_EXTRA
 # Appended to the praxis-extproc-fips-host-* cache volume names so runs with
 # different trust can be kept apart: CI gives pull requests their own volumes
 # (see .github/workflows/fips.yaml) and the warm ones stay with main.
@@ -252,7 +255,7 @@ require-oc:
 # The debug build is the edit-compile loop; only the release build carries
 # the manifest.
 build-fips:
-	cargo build $(FIPS_CARGO_ARGS) $(FIPS_CARGO_EXTRA)
+	cargo build $(FIPS_CARGO_ARGS) $$FIPS_CARGO_EXTRA
 
 # cargo before 1.99 does not relink a binary when only the SBOM setting
 # changed (rust-lang/cargo#15695, fixed by #17216), so the old binary goes
@@ -268,7 +271,7 @@ else
 endif
 
 check-fips:
-	cargo check $(FIPS_CARGO_ARGS) $(FIPS_CARGO_EXTRA)
+	cargo check $(FIPS_CARGO_ARGS) $$FIPS_CARGO_EXTRA
 
 # Clippy over every target of the FIPS build, plus the rustfmt check (which
 # is feature-independent but belongs in "is the FIPS version clean").
@@ -280,7 +283,7 @@ lint-fips:
 # target of the package compiles in, including the FIPS behavior tests
 # (tests/fips/), whose expectations key on the mode the process is in.
 test-fips:
-	cargo test $(FIPS_CARGO_ARGS) $(FIPS_CARGO_EXTRA) $(_NOCAPTURE)
+	cargo test $(FIPS_CARGO_ARGS) $$FIPS_CARGO_EXTRA $(_NOCAPTURE)
 
 # podman finds Red Hat's detached image signatures through its registries.d
 # (containers-registries.d(5)). Fedora and RHEL ship the entry; Debian and
@@ -403,11 +406,12 @@ fips-host-facts:
 # warning unless FIPS_HOST_CHECK_ARGS adds --require-certified. Writes the
 # attestation to target/fips/ for CI to keep.
 FIPS_HOST_CHECK_ARGS    ?=
+export FIPS_HOST_CHECK_ARGS
 fips-host-check: | require-podman
 	@mkdir -p $(FIPS_TARGET_DIR)
 	$(XTASK) fips host-check --image $(FIPS_IMAGE_REF) \
 		--out $(FIPS_TARGET_DIR)/host-attestation.txt \
-		--json $(FIPS_TARGET_DIR)/host-attestation.json $(FIPS_HOST_CHECK_ARGS)
+		--json $(FIPS_TARGET_DIR)/host-attestation.json $$FIPS_HOST_CHECK_ARGS
 
 # Run the product image on this FIPS host under PRAXIS_REQUIRE_FIPS=1 and
 # drive the listener probes of the FIPS suite against it from the toolchain
