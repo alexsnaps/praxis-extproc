@@ -178,7 +178,7 @@ runs on every change):
 
 ```console
 make fips-host-check     # attest the host and the image's module build (target/fips/host-attestation.*)
-make test-fips-host      # the whole test suite as the FIPS build, inside the UBI 9 toolchain image, fail-closed on FIPS mode
+make test-fips-host      # the test suite as the FIPS build, inside the UBI 9 toolchain image, fail-closed on FIPS mode
 make fips-runtime-probe  # run the product image under PRAXIS_REQUIRE_FIPS=1 and probe its TLS listener
 ```
 
@@ -195,7 +195,10 @@ OpenSSL listener refuses ChaCha20-only, X25519-only and non-EMS TLS 1.2
 clients and negotiates AES-GCM on the NIST curves. `fips-runtime-probe`
 starts the shipped image itself under `PRAXIS_REQUIRE_FIPS=1`, drives those
 same listener probes against it from outside (including a real ExtProc gRPC
-exchange over the approved TLS), and checks the startup line.
+exchange over the approved TLS), and checks the startup line. The
+cluster-bound suites (`make test-integration` and the k8s e2e tests) are
+not part of the host run; CI drives them in their own jobs, against real
+clusters.
 
 A hand check on the FIPS host remains a two-liner:
 
