@@ -413,7 +413,7 @@ fips-runtime-probe: | require-podman
 	@mkdir -p $(FIPS_TARGET_DIR)
 	$(XTASK) fips runtime-probe $(FIPS_IMAGE_REF) \
 		--toolchain-image $(FIPS_TOOLCHAIN_IMAGE) --log $(FIPS_TARGET_DIR)/runtime-probe.log \
-		$(if $(FIPS_HOST_VOLUME_SUFFIX),--volume-suffix $(FIPS_HOST_VOLUME_SUFFIX))
+		$(if $(FIPS_HOST_VOLUME_SUFFIX),--volume-suffix=$(FIPS_HOST_VOLUME_SUFFIX))
 
 # The image reference the FIPS targets operate on, for scripts that need it.
 fips-image-ref:

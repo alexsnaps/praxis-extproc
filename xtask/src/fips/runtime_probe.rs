@@ -89,8 +89,9 @@ pub(crate) struct Args {
 
     /// Appended to the cache volume names, so runs of different trust keep
     /// separate cargo and target volumes (the Makefile's
-    /// `FIPS_HOST_VOLUME_SUFFIX`).
-    #[arg(long, default_value = "", value_name = "SUFFIX")]
+    /// `FIPS_HOST_VOLUME_SUFFIX`). Suffixes lead with a hyphen (`-pr`), so
+    /// hyphen values must parse as values here, not as flags.
+    #[arg(long, default_value = "", value_name = "SUFFIX", allow_hyphen_values = true)]
     volume_suffix: String,
 
     /// Also write the container's log here.
@@ -513,6 +514,12 @@ fn free_port() -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_volume_suffix_takes_a_leading_hyphen() {
+        let args = Args::try_parse_from(["runtime-probe", "img", "--volume-suffix", "-pr"]).expect("parse");
+        assert_eq!(args.volume_suffix, "-pr");
+    }
 
     #[test]
     fn the_status_line_must_report_fips_on_both_signals() {
