@@ -87,7 +87,7 @@ pub(crate) fn request_headers(mutation: Option<HeaderMutation>) -> ProcessingRes
         response: Some(Response::RequestHeaders(HeadersResponse {
             response: Some(CommonResponse {
                 status: ResponseStatus::Continue.into(),
-                clear_route_cache: mutation.is_some(),
+                clear_route_cache: mutation_affects_routing(mutation.as_ref()),
                 header_mutation: mutation,
                 ..Default::default()
             }),
@@ -215,6 +215,22 @@ fn chunk_body(data: &[u8]) -> Vec<(&[u8], bool)> {
 // Utilities
 // -----------------------------------------------------------------------------
 
+/// Whether a mutation changes a routing-relevant header.
+///
+/// Only a filter that set or removed a header should clear the route cache. A
+/// mutation carrying nothing but the `content-length` we inject to match a
+/// resized body is not a routing change, so it must not trigger re-evaluation.
+fn mutation_affects_routing(mutation: Option<&HeaderMutation>) -> bool {
+    mutation.is_some_and(|m| {
+        !m.remove_headers.is_empty()
+            || m.set_headers.iter().any(|h| {
+                h.header
+                    .as_ref()
+                    .is_none_or(|hv| !hv.key.eq_ignore_ascii_case("content-length"))
+            })
+    })
+}
+
 /// Build body response(s) with optional header mutation and body data.
 ///
 /// When body data is present, populates `body_mutation` so Envoy
@@ -236,6 +252,7 @@ fn body_responses(
 
             let common = CommonResponse {
                 status: ResponseStatus::Continue.into(),
+                clear_route_cache: is_request && mutation_affects_routing(mutation.as_ref()),
                 header_mutation: mutation,
                 body_mutation,
                 ..Default::default()
@@ -306,6 +323,7 @@ fn make_streamed_response(
     wrap_body_response(
         CommonResponse {
             status: ResponseStatus::Continue.into(),
+            clear_route_cache: is_request && mutation_affects_routing(header_mutation.as_ref()),
             header_mutation,
             body_mutation,
             ..Default::default()
@@ -830,5 +848,96 @@ mod tests {
                 .and_then(|bm| bm.mutation.as_ref()),
             _ => None,
         }
+    }
+
+    fn extract_clear_route_cache(resp: &ProcessingResponse) -> bool {
+        match &resp.response {
+            Some(Response::RequestBody(b)) => b.response.as_ref().is_some_and(|c| c.clear_route_cache),
+            Some(Response::ResponseBody(b)) => b.response.as_ref().is_some_and(|c| c.clear_route_cache),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn buffered_request_body_header_mutation_clears_route_cache() {
+        let mutation = HeaderMutation {
+            set_headers: vec![],
+            remove_headers: vec!["x-internal".to_owned()],
+        };
+        let responses = request_body(Some(b"{}"), Some(mutation), BodyMode::Buffered, true);
+
+        assert!(
+            extract_clear_route_cache(&responses[0]),
+            "BUFFERED request body with header mutation must clear the route cache"
+        );
+    }
+
+    #[test]
+    fn full_duplex_request_body_header_mutation_clears_route_cache() {
+        let mutation = HeaderMutation {
+            set_headers: vec![],
+            remove_headers: vec!["x-internal".to_owned()],
+        };
+        let responses = request_body(Some(b"{}"), Some(mutation), BodyMode::FullDuplexStreamed, true);
+
+        assert!(
+            extract_clear_route_cache(&responses[0]),
+            "full-duplex request body with header mutation must clear the route cache on the first chunk"
+        );
+    }
+
+    #[test]
+    fn request_body_without_mutation_leaves_route_cache() {
+        let responses = request_body(Some(b"{}"), None, BodyMode::Buffered, true);
+
+        assert!(
+            !extract_clear_route_cache(&responses[0]),
+            "request body without a header mutation must not clear the route cache"
+        );
+    }
+
+    #[test]
+    fn request_body_content_length_only_mutation_leaves_route_cache() {
+        // A filter resized the body but changed no routing header: the mutation
+        // carries only the injected content-length, so re-routing must not fire.
+        let mutation = crate::adapter::set_content_length(None, 42);
+        let responses = request_body(Some(b"{}"), Some(mutation), BodyMode::Buffered, true);
+
+        assert!(
+            !extract_clear_route_cache(&responses[0]),
+            "a content-length-only mutation is not a routing change and must not clear the route cache"
+        );
+    }
+
+    #[test]
+    fn request_body_header_plus_content_length_clears_route_cache() {
+        // A real header change alongside the injected content-length still clears.
+        let mutation = crate::adapter::set_content_length(
+            Some(HeaderMutation {
+                set_headers: vec![],
+                remove_headers: vec!["x-internal".to_owned()],
+            }),
+            42,
+        );
+        let responses = request_body(Some(b"{}"), Some(mutation), BodyMode::Buffered, true);
+
+        assert!(
+            extract_clear_route_cache(&responses[0]),
+            "a routing header change must clear the route cache even when content-length is also set"
+        );
+    }
+
+    #[test]
+    fn response_body_header_mutation_does_not_clear_route_cache() {
+        let mutation = HeaderMutation {
+            set_headers: vec![],
+            remove_headers: vec!["x-internal".to_owned()],
+        };
+        let responses = response_body(Some(b"{}"), Some(mutation), BodyMode::Buffered, true);
+
+        assert!(
+            !extract_clear_route_cache(&responses[0]),
+            "response-phase body mutations must never clear the route cache"
+        );
     }
 }
