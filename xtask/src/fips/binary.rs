@@ -437,8 +437,9 @@ fn uninspectable_imports(reason: &str) -> Finding {
               OpenSSL import it cannot read would otherwise slip past the allowlist and ship unchecked"
             .to_owned(),
         location: "the ELF dynamic symbol table and GNU version sections (.gnu.version / .gnu.version_r)".to_owned(),
-        fix: "assess a 64-bit ELF built by 'make release-fips'; keep the .gnu.version and .gnu.version_r sections (do \
-              not strip them)"
+        fix: "assess a 64-bit ELF built by 'make release-fips', dynamically linked against the system OpenSSL so its \
+              imports carry versions; the .gnu.version/.gnu.version_r sections are load-bearing for the dynamic linker \
+              and survive 'strip', so do not disable stripping to keep them"
             .to_owned(),
     }
 }
