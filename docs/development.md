@@ -280,11 +280,12 @@ build, and `fips-report` runs the report against
    backend (`ring_core_`, `aws_lc_`, `BORINGSSL_`,
    `OPENSSL_`), imports its cryptography from the system
    OpenSSL and imports only reviewed OpenSSL symbols —
-   every `@OPENSSL_3.0.0` symbol it imports is on the
-   reviewed allowlist in
-   `xtask/assets/fips/openssl-3.0-nondeprecated-symbols.txt`,
-   so an unlisted, deprecated or unversioned OpenSSL
-   import is a finding — carries the cargo-auditable
+   every `name@OPENSSL_version` symbol it imports is on
+   the reviewed allowlist in
+   `xtask/assets/fips/openssl-nondeprecated-symbols.txt`
+   (every non-deprecated libcrypto/libssl export through
+   OpenSSL 3.5), so an unlisted, deprecated or unversioned
+   OpenSSL import is a finding — carries the cargo-auditable
    manifest (`.dep-v0`, built from cargo's SBOM
    precursor, listing no denied crate) and the rustc
    producer string. A binary that is missing, unreadable

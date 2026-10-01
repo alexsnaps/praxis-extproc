@@ -31,9 +31,10 @@ pub(crate) const FIPS_PROVIDER_CNF: &str = include_str!("../../assets/fips/fips-
 pub(crate) const CERTIFIED_MODULES: &str = include_str!("../../assets/fips/certified-modules.json");
 
 /// The OpenSSL symbols the shipped binary may import from the system
-/// libcrypto/libssl under the `OPENSSL_3.0.0` version: every non-deprecated
-/// OpenSSL 3.0 export, plus the deprecated symbols still in use, one per line
-/// (blank lines and `#` comments ignored). `binary` fails the report on any
-/// imported `@OPENSSL_3.0.0` symbol not on this list, so an import of a
-/// deprecated or otherwise unlisted OpenSSL function is caught before it ships.
-pub(crate) const OPENSSL_3_0_0_SYMBOLS: &str = include_str!("../../assets/fips/openssl-3.0-nondeprecated-symbols.txt");
+/// libcrypto/libssl, each as `name@OPENSSL_version`: every non-deprecated
+/// libcrypto/libssl export through OpenSSL 3.5, one per line (blank lines and
+/// `#` comments ignored). `binary` fails the report on any imported OpenSSL
+/// symbol not on this list, so an import of a deprecated or otherwise unlisted
+/// OpenSSL function is caught before it ships.
+pub(crate) const OPENSSL_NONDEPRECATED_SYMBOLS: &str =
+    include_str!("../../assets/fips/openssl-nondeprecated-symbols.txt");

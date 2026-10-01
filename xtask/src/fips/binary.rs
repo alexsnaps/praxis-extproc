@@ -3,10 +3,10 @@
 
 //! Binary section of the report: the shipped binary must link the system
 //! libcrypto dynamically, define no symbol of a bundled crypto backend, import
-//! OpenSSL only under the `@OPENSSL_3.0.0` version and only symbols on the
-//! reviewed allowlist, and carry the cargo-auditable manifest and the rustc
-//! producer string. A binary that is not given, cannot be read or is not an ELF
-//! file is a finding too, so the report never passes a build it did not inspect.
+//! only OpenSSL symbols on the reviewed allowlist (each `name@OPENSSL_version`),
+//! and carry the cargo-auditable manifest and the rustc producer string. A
+//! binary that is not given, cannot be read or is not an ELF file is a finding
+//! too, so the report never passes a build it did not inspect.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -251,72 +251,43 @@ fn imports(report: &mut Report, file: &object::File<'_>) {
 // OpenSSL Symbol Allowlist
 // -----------------------------------------------------------------------------
 
-/// The ELF symbol version the system OpenSSL 3 exports its base ABI under.
-const OPENSSL_3_0_0_VERSION: &[u8] = b"OPENSSL_3.0.0";
-
-/// The prefix every OpenSSL symbol version node shares. A version under this
-/// prefix other than `OPENSSL_3.0.0` names a later OpenSSL ABI the validated
-/// 3.0 module may not provide.
+/// The prefix every OpenSSL symbol version node shares; only imports bound to
+/// one of these nodes are the OpenSSL symbols the allowlist governs.
 const OPENSSL_VERSION_PREFIX: &[u8] = b"OPENSSL_";
 
-/// The OpenSSL-versioned symbols a binary imports, split by whether they bind
-/// to the validated `OPENSSL_3.0.0` base ABI or to some other OpenSSL version.
-#[derive(Default)]
-struct OpensslImports<'a> {
-    /// Base names (without the `@OPENSSL_3.0.0` suffix) imported under the base
-    /// ABI; matched against the reviewed allowlist.
-    base: BTreeSet<&'a str>,
-    /// `name@OPENSSL_x.y.z` of every import bound to an OpenSSL version other
-    /// than `OPENSSL_3.0.0`.
-    other: BTreeSet<String>,
-}
-
-/// Every OpenSSL symbol the binary imports must bind to the `OPENSSL_3.0.0`
-/// base ABI and be on the reviewed allowlist, so neither a call that needs a
-/// later OpenSSL version nor one into a not-yet-vetted function slips past
-/// before it ships.
+/// Every OpenSSL symbol the binary imports, as `name@OPENSSL_x.y.z`, must be on
+/// the reviewed allowlist, so a deprecated or not-yet-vetted call into
+/// libcrypto/libssl is caught before it ships. The allowlist carries the
+/// version, so a symbol is matched by name and version together: any
+/// non-deprecated export (through OpenSSL 3.5) is accepted, whatever version
+/// node it binds to.
 fn openssl_imports(report: &mut Report, data: &[u8]) {
-    match openssl_symbols(data) {
-        Ok(imported) => {
-            check_other_versions(report, &imported.other);
-            check_allowlist(report, &imported.base);
+    let imported = match openssl_symbols(data) {
+        Ok(imported) => imported,
+        Err(reason) => {
+            report.fail(uninspectable_imports(&reason));
+            return;
         },
-        Err(reason) => report.fail(uninspectable_imports(&reason)),
-    }
-}
-
-/// Fail the report on any OpenSSL symbol bound to a version other than the
-/// validated `OPENSSL_3.0.0` base ABI.
-fn check_other_versions(report: &mut Report, other: &BTreeSet<String>) {
-    if other.is_empty() {
-        report.ok("every OpenSSL symbol imported binds to the @OPENSSL_3.0.0 base ABI");
-    } else {
-        report.fail(other_openssl_version(other));
-    }
-}
-
-/// Fail the report on any `@OPENSSL_3.0.0` import that is not on the reviewed
-/// allowlist.
-fn check_allowlist(report: &mut Report, base: &BTreeSet<&str>) {
+    };
     let allowed = allowlist();
-    let unexpected = unexpected_imports(base, &allowed);
+    let unexpected = unexpected_imports(&imported, &allowed);
     if unexpected.is_empty() {
         report.ok(&format!(
-            "every one of the {} @OPENSSL_3.0.0 symbols imported is on the reviewed allowlist",
-            base.len()
+            "every one of the {} OpenSSL symbols imported is on the reviewed allowlist",
+            imported.len()
         ));
     } else {
         report.fail(unexpected_openssl(&unexpected));
     }
 }
 
-/// The undefined OpenSSL-versioned symbols the binary imports, split into the
-/// `OPENSSL_3.0.0` base ABI and any other OpenSSL version.
+/// The undefined OpenSSL symbols the binary imports, each as
+/// `name@OPENSSL_x.y.z` from its base name and GNU version node.
 ///
 /// Errors when the binary carries no GNU symbol version table: its imports
-/// would then be unversioned and slip past both checks unchecked, so the caller
-/// turns that into a finding rather than a silent pass.
-fn openssl_symbols(data: &[u8]) -> Result<OpensslImports<'_>, String> {
+/// would then be unversioned and slip past the allowlist unchecked, so the
+/// caller turns that into a finding rather than a silent pass.
+fn openssl_symbols(data: &[u8]) -> Result<BTreeSet<String>, String> {
     let elf = ElfFile64::<Endianness>::parse(data).map_err(|err| err.to_string())?;
     let endian = elf.endian();
     let symbols = elf.elf_dynamic_symbol_table();
@@ -325,7 +296,7 @@ fn openssl_symbols(data: &[u8]) -> Result<OpensslImports<'_>, String> {
         .versions(endian, data)
         .map_err(|err| err.to_string())?
         .ok_or("no GNU symbol version table (.gnu.version)")?;
-    let mut imports = OpensslImports::default();
+    let mut imported = BTreeSet::new();
     for (index, symbol) in symbols.enumerate() {
         if !symbol.is_undefined(endian) {
             continue;
@@ -340,26 +311,21 @@ fn openssl_symbols(data: &[u8]) -> Result<OpensslImports<'_>, String> {
             continue;
         };
         let name = import_name(symbol.name(endian, symbols.strings()))?;
-        if version == OPENSSL_3_0_0_VERSION {
-            imports.base.insert(name);
-        } else {
-            imports.other.insert(other_import(name, version));
-        }
+        imported.insert(versioned_name(name, version));
     }
-    Ok(imports)
+    Ok(imported)
 }
 
-/// `name@OPENSSL_x.y.z` for an import bound to an OpenSSL version other than the
-/// base ABI, the form the finding lists so the offending version is visible.
-fn other_import(name: &str, version: &[u8]) -> String {
+/// `name@OPENSSL_x.y.z` for an OpenSSL import, the exact form the allowlist
+/// holds: the UTF-8 base name joined to its version-node name.
+fn versioned_name(name: &str, version: &[u8]) -> String {
     format!("{name}@{}", String::from_utf8_lossy(version))
 }
 
-/// The UTF-8 name of an OpenSSL-versioned import from its raw string-table
-/// entry, or the reason it cannot be one. Both checks read UTF-8 names only (the
-/// allowlist holds valid UTF-8 and the other-version list renders it), so an
-/// OpenSSL import with an unreadable or non-UTF-8 name could never be matched or
-/// listed; failing here keeps such an import from slipping through unchecked.
+/// The UTF-8 name of an OpenSSL import from its raw string-table entry, or the
+/// reason it cannot be one. The allowlist holds valid UTF-8, so an OpenSSL
+/// import with an unreadable or non-UTF-8 name could never match it; failing
+/// here keeps such an import from slipping through unchecked.
 fn import_name(raw: Result<&[u8], object::read::Error>) -> Result<&str, String> {
     let raw = raw.map_err(|err| format!("an OpenSSL import has an unreadable name: {err}"))?;
     std::str::from_utf8(raw).map_err(|err| {
@@ -370,10 +336,10 @@ fn import_name(raw: Result<&[u8], object::read::Error>) -> Result<&str, String> 
     })
 }
 
-/// The reviewed set of allowed `@OPENSSL_3.0.0` symbols, from the compiled-in
-/// asset.
+/// The reviewed set of allowed `name@OPENSSL_x.y.z` symbols, from the
+/// compiled-in asset.
 fn allowlist() -> BTreeSet<&'static str> {
-    super::assets::OPENSSL_3_0_0_SYMBOLS
+    super::assets::OPENSSL_NONDEPRECATED_SYMBOLS
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -381,10 +347,10 @@ fn allowlist() -> BTreeSet<&'static str> {
 }
 
 /// The imported symbols that are not on the allowlist, sorted.
-fn unexpected_imports<'a>(imported: &BTreeSet<&'a str>, allowed: &BTreeSet<&str>) -> Vec<&'a str> {
+fn unexpected_imports<'a>(imported: &'a BTreeSet<String>, allowed: &BTreeSet<&str>) -> Vec<&'a str> {
     imported
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|name| !allowed.contains(name))
         .collect()
 }
@@ -392,37 +358,14 @@ fn unexpected_imports<'a>(imported: &BTreeSet<&'a str>, allowed: &BTreeSet<&str>
 /// The finding for a binary importing an OpenSSL symbol nobody reviewed.
 fn unexpected_openssl(symbols: &[&str]) -> Finding {
     Finding {
-        title: format!(
-            "imports @OPENSSL_3.0.0 symbols not on the allowlist: {}",
-            symbols.join(" ")
-        ),
-        why: "the allowlist is every non-deprecated OpenSSL 3.0 export plus the deprecated symbols already in use; a \
-              symbol outside it is a deprecated or otherwise non-standard call into libcrypto/libssl that has not been \
+        title: format!("imports OpenSSL symbols not on the allowlist: {}", symbols.join(" ")),
+        why: "the allowlist is every non-deprecated OpenSSL export through 3.5, as name@OPENSSL_version; a symbol \
+              outside it is a deprecated or otherwise non-standard call into libcrypto/libssl that has not been \
               reviewed for this FIPS build"
             .to_owned(),
-        location: "xtask/assets/fips/openssl-3.0-nondeprecated-symbols.txt holds the allowed symbols".to_owned(),
-        fix: "prefer a non-deprecated replacement; if the call is appropriate for the FIPS build, add its symbol to \
-              xtask/assets/fips/openssl-3.0-nondeprecated-symbols.txt (deprecated symbols go in the header block)"
-            .to_owned(),
-    }
-}
-
-/// The finding for a binary importing an OpenSSL symbol bound to a version other
-/// than the validated `OPENSSL_3.0.0` base ABI.
-fn other_openssl_version(symbols: &BTreeSet<String>) -> Finding {
-    let listed: Vec<&str> = symbols.iter().map(String::as_str).collect();
-    Finding {
-        title: format!(
-            "imports OpenSSL symbols bound to a version other than @OPENSSL_3.0.0: {}",
-            listed.join(" ")
-        ),
-        why: "the validated module is RHEL's OpenSSL 3.0.x; a symbol bound to a later version node (OPENSSL_3.1.0, \
-              OPENSSL_3.2.0, ...) needs an ABI that module may not provide and ties the binary to a newer, \
-              non-validated libcrypto"
-            .to_owned(),
-        location: "the ELF dynamic symbol table's GNU version entries (.gnu.version / .gnu.version_r)".to_owned(),
-        fix: "call an OpenSSL function present in the 3.0.0 base ABI, or build against the system OpenSSL 3.0 headers \
-              so the call binds to @OPENSSL_3.0.0"
+        location: "xtask/assets/fips/openssl-nondeprecated-symbols.txt holds the allowed symbols".to_owned(),
+        fix: "prefer a non-deprecated replacement; if the call is appropriate for the FIPS build, add its \
+              name@OPENSSL_version to xtask/assets/fips/openssl-nondeprecated-symbols.txt"
             .to_owned(),
     }
 }
@@ -708,10 +651,9 @@ mod tests {
         );
         let imported = openssl_symbols(&data).expect("the version scan reads a real ELF");
         assert!(
-            imported.base.contains("EVP_sha256"),
-            "this test hashes through openssl::hash, so the binary imports EVP_sha256 under the base ABI and the scan \
-             must find that exact symbol: {:?}",
-            imported.base
+            imported.contains("EVP_sha256@OPENSSL_3.0.0"),
+            "this test hashes through openssl::hash, so the binary imports EVP_sha256 and the scan must find that exact \
+             name@version: {imported:?}"
         );
     }
 
@@ -719,8 +661,10 @@ mod tests {
     fn the_allowlist_parses_symbols_and_ignores_comments_and_blank_lines() {
         let allowed = allowlist();
         assert!(
-            allowed.contains("EVP_sha256") && allowed.contains("SSL_new") && allowed.contains("X509_free"),
-            "known OpenSSL symbols are on the list"
+            allowed.contains("EVP_sha256@OPENSSL_3.0.0")
+                && allowed.contains("SSL_new@OPENSSL_3.0.0")
+                && allowed.contains("X509_free@OPENSSL_3.0.0"),
+            "known OpenSSL symbols are on the list, carrying their version node"
         );
         assert!(
             !allowed.iter().any(|line| line.is_empty() || line.starts_with('#')),
@@ -728,7 +672,7 @@ mod tests {
         );
         assert_eq!(
             allowed.len(),
-            4890,
+            5446,
             "every reviewed allowlist entry is loaded; update this count when the allowlist changes"
         );
     }
@@ -736,54 +680,51 @@ mod tests {
     #[test]
     fn unexpected_imports_are_only_the_symbols_off_the_allowlist() {
         let allowed = allowlist();
-        let imported = BTreeSet::from(["EVP_sha256", "EVP_brandnew", "SSL_new"]);
+        let imported = BTreeSet::from([
+            "EVP_sha256@OPENSSL_3.0.0".to_owned(),
+            "EVP_brandnew@OPENSSL_3.9.0".to_owned(),
+            "SSL_new@OPENSSL_3.0.0".to_owned(),
+        ]);
         assert_eq!(
             unexpected_imports(&imported, &allowed),
-            ["EVP_brandnew"],
-            "only the symbol the allowlist does not cover is reported"
+            ["EVP_brandnew@OPENSSL_3.9.0"],
+            "only the name@version the allowlist does not cover is reported"
         );
-        let clean = BTreeSet::from(["EVP_sha256", "SSL_new"]);
+        let clean = BTreeSet::from([
+            "EVP_sha256@OPENSSL_3.0.0".to_owned(),
+            "SSL_new@OPENSSL_3.0.0".to_owned(),
+        ]);
         assert!(
             unexpected_imports(&clean, &allowed).is_empty(),
             "an all-allowed set has no unexpected imports"
         );
-        let finding = unexpected_openssl(&["EVP_brandnew"]);
+        let finding = unexpected_openssl(&["EVP_brandnew@OPENSSL_3.9.0"]);
         assert!(
-            finding.title.contains("EVP_brandnew"),
+            finding.title.contains("EVP_brandnew@OPENSSL_3.9.0"),
             "the finding names the offending symbol: {}",
             finding.title
         );
     }
 
     #[test]
-    fn an_openssl_symbol_under_another_version_fails_the_report() {
-        let mut clean = Report::default();
-        check_other_versions(&mut clean, &BTreeSet::new());
-        assert!(!clean.failed(), "no other-version imports is a pass, not a finding");
-
-        let other = BTreeSet::from(["EVP_foo@OPENSSL_3.2.0".to_owned()]);
-        let mut report = Report::default();
-        check_other_versions(&mut report, &other);
+    fn a_newer_non_deprecated_symbol_is_allowed_but_a_deprecated_one_is_not() {
+        let allowed = allowlist();
         assert!(
-            report.failed(),
-            "an OpenSSL symbol bound to a version other than 3.0.0 fails the report"
+            allowed.contains("BN_are_coprime@OPENSSL_3.1.0"),
+            "a non-deprecated symbol introduced after 3.0 is on the list, so a newer OpenSSL version is accepted"
         );
         assert!(
-            report.has_finding("EVP_foo@OPENSSL_3.2.0"),
-            "the finding names the offending symbol and its version"
-        );
-        assert!(
-            report.has_finding("other than @OPENSSL_3.0.0"),
-            "the finding says the version is not the validated base ABI"
+            !allowed.contains("DH_free@OPENSSL_3.0.0"),
+            "a deprecated symbol is excluded, so importing it is reported as unexpected"
         );
     }
 
     #[test]
-    fn an_other_version_import_is_rendered_name_at_version() {
+    fn an_import_is_rendered_name_at_version() {
         assert_eq!(
-            other_import("EVP_foo", b"OPENSSL_3.2.0"),
-            "EVP_foo@OPENSSL_3.2.0",
-            "the import is listed as name@version so the offending version is visible"
+            versioned_name("EVP_sha256", b"OPENSSL_3.0.0"),
+            "EVP_sha256@OPENSSL_3.0.0",
+            "an import is listed as name@version, the exact form the allowlist holds"
         );
     }
 
