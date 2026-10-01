@@ -284,8 +284,9 @@ build, and `fips-report` runs the report against
    the reviewed allowlist in
    `xtask/assets/fips/openssl-nondeprecated-symbols.txt`
    (every non-deprecated libcrypto/libssl export through
-   OpenSSL 3.5), so an unlisted, deprecated or unversioned
-   OpenSSL import is a finding — carries the cargo-auditable
+   OpenSSL 3.5), so an unlisted or deprecated versioned
+   OpenSSL import, or a binary with no GNU symbol-version
+   table, is a finding — carries the cargo-auditable
    manifest (`.dep-v0`, built from cargo's SBOM
    precursor, listing no denied crate) and the rustc
    producer string. A binary that is missing, unreadable
