@@ -601,7 +601,9 @@ fn producer(report: &mut Report, file: &object::File<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Write as _, ops::Not as _, path::PathBuf};
+    use std::{io::Write as _, path::PathBuf};
+
+    use openssl::hash::{MessageDigest, hash};
 
     use super::*;
 
@@ -697,15 +699,17 @@ mod tests {
         let mut report = Report::default();
         producer(&mut report, &file);
         assert!(!report.failed(), "a rustc-built binary carries the producer string");
-        // xtask links the system OpenSSL, so exactly what it imports depends on
-        // the host; the scan must at least run against a real ELF and return
-        // named @OPENSSL_3.0.0 symbols. The host's OpenSSL may be newer than
-        // 3.0, so `other` is not asserted on here.
+        let digest = hash(MessageDigest::sha256(), b"praxis").expect("the test host has a working libcrypto");
+        assert_eq!(
+            digest.len(),
+            32,
+            "the SHA-256 that pulls EVP_sha256 into this binary actually ran"
+        );
         let imported = openssl_symbols(&data).expect("the version scan reads a real ELF");
-        assert!(imported.base.is_empty().not(), "No @OPENSSL_3.0.0 symbols found");
         assert!(
-            imported.base.iter().all(|name| !name.is_empty()),
-            "the scan returns named @OPENSSL_3.0.0 imports: {:?}",
+            imported.base.contains("EVP_sha256"),
+            "this test hashes through openssl::hash, so the binary imports EVP_sha256 under the base ABI and the scan \
+             must find that exact symbol: {:?}",
             imported.base
         );
     }
