@@ -547,6 +547,7 @@ fn producer(report: &mut Report, file: &object::File<'_>) {
 mod tests {
     use std::{io::Write as _, path::PathBuf};
 
+    #[cfg(target_os = "linux")]
     use openssl::hash::{MessageDigest, hash};
 
     use super::*;
@@ -630,6 +631,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_test_binary_itself_is_a_rust_elf_and_the_symbol_scan_sees_what_it_links() {
         let me = std::env::current_exe().expect("the test binary has a path");
