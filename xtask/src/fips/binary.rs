@@ -725,10 +725,10 @@ mod tests {
             !allowed.iter().any(|line| line.is_empty() || line.starts_with('#')),
             "comments and blank lines are not entries: {allowed:?}"
         );
-        assert!(
-            allowed.len() > 100,
-            "the full allowlist is loaded, not a fragment: {}",
-            allowed.len()
+        assert_eq!(
+            allowed.len(),
+            4890,
+            "every reviewed allowlist entry is loaded; update this count when the allowlist changes"
         );
     }
 
